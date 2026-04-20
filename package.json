@@ -1,0 +1,41 @@
+{
+  "name": "@homeos/core",
+  "version": "1.0.0",
+  "description": "Home OS — The AI-powered home assistant platform. Multi-agent system for family management built on GitHub Copilot CLI.",
+  "type": "module",
+  "main": "extensions/index.mjs",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "validate": "node scripts/validate-config.mjs",
+    "cron": "node scripts/cron-runner.mjs",
+    "health": "node scripts/health-check.mjs",
+    "test": "node --test tests/"
+  },
+  "keywords": [
+    "home-assistant",
+    "ai-agents",
+    "family-management",
+    "copilot-cli",
+    "multi-agent",
+    "telegram-bot",
+    "task-management",
+    "meal-planning",
+    "budget-tracking",
+    "smart-home"
+  ],
+  "author": "Hector Flores <hector@htek.dev> (https://htek.dev)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/htekdev/home-os.git"
+  },
+  "homepage": "https://htekdev.github.io/home-os-site",
+  "bugs": {
+    "url": "https://github.com/htekdev/home-os/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

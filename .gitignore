@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment files (contain secrets)
+.env
+.env.local
+config/*.env
+!config/*.env.example
+
+# Token files
+data/google-tokens.json
+data/plaid-tokens.json
+
+# Database files (user-specific)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+!data/agents/*/events.log
+
+# Build output
+dist/
+build/

@@ -1,0 +1,77 @@
+{
+  "timezone": "America/Chicago",
+  "jobs": [
+    {
+      "id": "morning-briefing",
+      "schedule": "0 6 * * 1-5",
+      "enabled": true,
+      "agent": "daily-briefing",
+      "description": "Weekday morning briefing at 6 AM"
+    },
+    {
+      "id": "weekend-briefing",
+      "schedule": "0 8 * * 0,6",
+      "enabled": true,
+      "agent": "daily-briefing",
+      "description": "Weekend briefing at 8 AM"
+    },
+    {
+      "id": "task-coach-nudge",
+      "schedule": "*/20 6-22 * * *",
+      "enabled": true,
+      "agent": "task-coach",
+      "description": "Serve next task every 20 min during waking hours"
+    },
+    {
+      "id": "weekly-planner",
+      "schedule": "0 19 * * 0",
+      "enabled": true,
+      "agent": "weekly-planner",
+      "description": "Sunday evening weekly planning session"
+    },
+    {
+      "id": "meal-planner",
+      "schedule": "0 10 * * 6",
+      "enabled": true,
+      "agent": "meal-planner",
+      "description": "Saturday morning meal planning"
+    },
+    {
+      "id": "budget-review",
+      "schedule": "0 9 1 * *",
+      "enabled": true,
+      "agent": "finance-manager",
+      "description": "Monthly budget review on the 1st"
+    },
+    {
+      "id": "health-check",
+      "schedule": "0 9 * * *",
+      "enabled": true,
+      "agent": "health-coach",
+      "description": "Daily health and medication check"
+    },
+    {
+      "id": "home-maintenance",
+      "schedule": "0 8 * * 1",
+      "enabled": true,
+      "agent": "home-manager",
+      "description": "Monday maintenance schedule review"
+    },
+    {
+      "id": "email-triage",
+      "schedule": "0 11 * * *",
+      "enabled": true,
+      "agent": "finance-manager",
+      "prompt": "Scan inbox for bills, receipts, and action items. Auto-log expenses, create tasks for follow-ups.",
+      "description": "Daily email triage for financial items"
+    },
+    {
+      "id": "evening-reflection",
+      "schedule": "0 21 * * *",
+      "enabled": true,
+      "agent": "task-coach",
+      "prompt": "End-of-day summary: tasks completed today, what's pending for tomorrow, any blockers.",
+      "description": "Nightly task summary and tomorrow prep"
+    }
+  ]
+}

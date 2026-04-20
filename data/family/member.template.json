@@ -1,0 +1,36 @@
+{
+  "name": "",
+  "role": "parent",
+  "telegram_id": "",
+  "email": "",
+  "dietary": {
+    "preferences": [],
+    "allergies": [],
+    "dislikes": [],
+    "special_needs": ""
+  },
+  "medical": {
+    "doctor": "",
+    "dentist": "",
+    "pharmacy": "",
+    "insurance_provider": "",
+    "insurance_id": "",
+    "blood_type": "",
+    "medications": [],
+    "conditions": [],
+    "immunizations_current": true
+  },
+  "schedule": {
+    "wake_time": "6:00 AM",
+    "work_start": "8:00 AM",
+    "work_end": "5:00 PM",
+    "bed_time": "10:30 PM",
+    "recurring_activities": []
+  },
+  "preferences": {
+    "communication_style": "concise",
+    "notification_frequency": "normal",
+    "quiet_hours_start": "22:00",
+    "quiet_hours_end": "06:00"
+  }
+}
