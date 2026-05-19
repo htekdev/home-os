@@ -151,6 +151,122 @@ npm run cron
 copilot-cli run agents/daily-briefing.agent.md
 ```
 
+### Home OS CLI (Phase 1)
+
+The first Home OS CLI iteration adds a standalone daemon + CLI for persistent Copilot SDK sessions.
+
+```bash
+# Install dependencies and build the CLI
+npm install
+npm run build
+
+# Start the daemon
+node ./bin/home-os.js start
+
+# Spawn a persistent agent session
+node ./bin/home-os.js spawn home-assistant
+
+# Inspect the tracked agents
+node ./bin/home-os.js list
+node ./bin/home-os.js logs home-assistant --limit 5
+
+# Stop the daemon when done
+node ./bin/home-os.js stop-daemon
+```
+
+### Home OS CLI (Phase 2)
+
+Phase 2 expands the runtime with message persistence, live streaming, inspect, and daemon recovery.
+
+```bash
+# Send a message to an agent — persisted and dispatched
+node ./bin/home-os.js send home-assistant "What's on the calendar today?"
+
+# Attach to an agent — replays recent output then streams live events
+node ./bin/home-os.js attach home-assistant
+# Use --no-replay to skip history, --replay-limit 5 to limit
+
+# Inspect full metadata for an agent
+node ./bin/home-os.js inspect home-assistant
+
+# Resume an orphaned/persisted agent after daemon restart
+node ./bin/home-os.js resume home-assistant
+```
+
+Key Phase 2 behaviors:
+- **send** — persists inbound message to SQLite, dispatches to SDK session, returns response
+- **attach** — SSE stream replaying recent output, then live-tailing all events
+- **inspect** — shows full agent metadata (profile, tools, session ID, loaded state, message count)
+- **resume** — reloads an orphaned agent that persists in SQLite but isn't loaded in memory
+- **Daemon recovery** — on startup, daemon auto-resumes all active/idle/orphaned agents
+- **Graceful shutdown** — marks agents as `orphaned` (not `stopped`) so they can be recovered
+
+### Home OS CLI (Phase 3)
+
+Phase 3 adds tool registration, bootstrap prompts, streaming, YAML profiles, and error recovery.
+
+```bash
+# List agents with table formatting and filters
+node ./bin/home-os.js list --active
+node ./bin/home-os.js list --stopped
+node ./bin/home-os.js list --status error
+
+# Streaming send — response chunks arrive in real-time
+node ./bin/home-os.js send home-assistant "Analyze this data" --stream
+
+# Spawn a YAML-defined profile (from config/profiles/*.yaml)
+node ./bin/home-os.js spawn coding-assistant --label my-dev
+
+# Inspect shows resolved tools
+node ./bin/home-os.js inspect home-assistant
+```
+
+Key Phase 3 behaviors:
+- **Bootstrap prompts** — after spawn, the profile's `bootstrapPrompt` is automatically sent; response persisted
+- **Tool registration** — profiles declare `baseTools` (view/glob/grep/shell or groups like `file-tools`/`dev-tools`); resolved and registered with SDK sessions
+- **Streaming send** — `--stream` flag streams response chunks via SSE as they arrive
+- **YAML profiles** — place `*.yaml` files in `config/profiles/` to define custom profiles without code changes
+- **Error recovery** — if `sendToAgent` fails, agent is marked `error` status with the error recorded (visible in `inspect`)
+- **Tool execution events** — `tool_execution_start/end` events are persisted and forwarded to attach subscribers
+- **Improved list** — table formatting, ANSI status colors, `--active`/`--stopped`/`--status` filters
+
+Built-in profiles:
+- `home-assistant` (file-tools)
+- `nicu-care` (file-tools)
+- `platform-manager` (dev-tools)
+
+YAML-defined profiles (config/profiles/):
+- `coding-assistant` (dev-tools)
+
+### Home OS CLI (Phase 4)
+
+Phase 4 adds agent-to-agent messaging, conversation history, metrics, hot-reload profiles, enhanced health checks, and configuration validation.
+
+```bash
+# Show full conversation history for an agent
+node ./bin/home-os.js history home-assistant
+node ./bin/home-os.js history home-assistant --limit 50
+
+# View agent metrics/statistics
+node ./bin/home-os.js stats home-assistant
+
+# Send a message between agents (agent-to-agent IPC)
+node ./bin/home-os.js message home-assistant nicu-care "Check pumping schedule"
+
+# Detailed health check with per-agent status
+curl http://127.0.0.1:44123/health?detailed=true
+```
+
+Key Phase 4 behaviors:
+- **Agent-to-agent messaging** — agents can send messages to each other via `sendAgentMessage`; delivered as system prompts to target sessions, queued if target is offline
+- **Conversation history** — `home-os history <agent>` shows full chronological conversation with colored roles and timestamps
+- **Agent metrics** — `home-os stats <agent>` shows uptime, message counts (in/out), tool call count, and estimated memory usage
+- **Hot-reload profiles** — daemon watches `config/profiles/` for YAML changes; profiles are reloaded automatically without restart
+- **Enhanced health endpoint** — `?detailed=true` on `/health` returns per-agent health info (status, memory, message count, last error)
+- **Configuration validation** — YAML profiles are validated against schema on load; clear error messages for invalid fields, bad names, unknown tools, malformed MCP configs
+- **MCP server config** — profiles can declare `mcpServers` array with name, command, args, env for MCP integration
+- **50 tests passing** (target was 40+)
+
 ### Customize for Your Family
 
 1. **Edit `data/constitution.md`** — Set your family's rules and preferences

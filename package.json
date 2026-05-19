@@ -1,26 +1,32 @@
 {
-  "name": "@homeos/core",
-  "version": "1.0.0",
-  "description": "Home OS — The AI-powered home assistant platform. Multi-agent system for family management built on GitHub Copilot CLI.",
+  "name": "home-os",
+  "version": "1.4.0",
+  "description": "Home OS — persistent Home OS CLI and daemon built on the GitHub Copilot SDK.",
   "type": "module",
-  "main": "extensions/index.mjs",
+  "main": "dist/daemon/index.js",
+  "bin": {
+    "home-os": "./bin/home-os.js",
+    "home-osd": "./bin/home-osd.js"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "setup": "node scripts/setup.mjs",
     "validate": "node scripts/validate-config.mjs",
     "cron": "node scripts/cron-runner.mjs",
     "health": "node scripts/health-check.mjs",
-    "test": "node --test tests/"
+    "daemon": "node ./bin/home-osd.js",
+    "test": "npm run build && node --test tests/**/*.test.js"
   },
   "keywords": [
     "home-assistant",
     "ai-agents",
     "family-management",
+    "copilot-sdk",
     "copilot-cli",
     "multi-agent",
-    "telegram-bot",
+    "persistent-agents",
     "task-management",
     "meal-planning",
-    "budget-tracking",
     "smart-home"
   ],
   "author": "Hector Flores <hector@htek.dev> (https://htek.dev)",
@@ -36,6 +42,15 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "@github/copilot-sdk": "^0.2.1",
+    "better-sqlite3": "^11.8.1",
+    "commander": "^12.1.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
 }

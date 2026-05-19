@@ -15,6 +15,8 @@ data/plaid-tokens.json
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/runtime/
+tests/fixtures/*.db
 
 # OS files
 .DS_Store
