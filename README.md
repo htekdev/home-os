@@ -151,6 +151,34 @@ npm run cron
 copilot-cli run agents/daily-briefing.agent.md
 ```
 
+### Home OS CLI (Phase 1)
+
+The first Home OS CLI iteration adds a standalone daemon + CLI for persistent Copilot SDK sessions.
+
+```bash
+# Install dependencies and build the CLI
+npm install
+npm run build
+
+# Start the daemon
+node ./bin/home-os.js start
+
+# Spawn a persistent agent session
+node ./bin/home-os.js spawn home-assistant
+
+# Inspect the tracked agents
+node ./bin/home-os.js list
+node ./bin/home-os.js logs home-assistant --limit 5
+
+# Stop the daemon when done
+node ./bin/home-os.js stop-daemon
+```
+
+Built-in profiles in Phase 1:
+- `home-assistant`
+- `nicu-care`
+- `platform-manager`
+
 ### Customize for Your Family
 
 1. **Edit `data/constitution.md`** — Set your family's rules and preferences
