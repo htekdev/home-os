@@ -1,6 +1,6 @@
 {
   "name": "home-os",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Home OS — persistent Home OS CLI and daemon built on the GitHub Copilot SDK.",
   "type": "module",
   "main": "dist/daemon/index.js",

@@ -1,8 +1,10 @@
 import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import { getProfile } from '../profiles/index.js';
 import { HomeOsStore } from '../store/db.js';
-import type { AgentProfile, AgentRecord, DaemonStatus, SpawnAgentRequest } from '../types.js';
+import type { AgentProfile, AgentRecord, AgentMessageRecord, DaemonStatus, SpawnAgentRequest } from '../types.js';
 import { DB_PATH, HOME_OS_ROOT } from '../utils/paths.js';
+
+export type EventSinkCallback = (event: { type: string; agentId: string; data: unknown; timestamp: string }) => void;
 
 export interface CopilotSessionLike {
   sessionId: string;
@@ -15,6 +17,7 @@ export interface CopilotClientLike {
   start(): Promise<void>;
   stop(): Promise<void>;
   createSession(input: Record<string, unknown>): Promise<CopilotSessionLike>;
+  resumeSession?(sessionId: string, input?: Record<string, unknown>): Promise<CopilotSessionLike>;
   deleteSession?(sessionId: string): Promise<void>;
 }
 
@@ -47,6 +50,7 @@ export class AgentSupervisor {
   private readonly store: HomeOsStore;
   private readonly clientFactory: () => CopilotClientLike;
   private readonly liveAgents = new Map<string, LiveAgentSession>();
+  private readonly attachSubscribers = new Map<string, Set<EventSinkCallback>>();
   private client: CopilotClientLike | null = null;
   private startedAt = nowIso();
   private lastError: string | null = null;
@@ -64,6 +68,8 @@ export class AgentSupervisor {
       await this.client.start();
       this.sdkReady = true;
       this.lastError = null;
+      // Attempt recovery of persisted agents
+      await this.recoverAgents();
     } catch (error) {
       this.sdkReady = false;
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -71,12 +77,32 @@ export class AgentSupervisor {
     }
   }
 
+  private async recoverAgents(): Promise<void> {
+    const resumable = this.store.getResumableAgents();
+    for (const record of resumable) {
+      try {
+        await this.resumeAgentInternal(record);
+      } catch {
+        // Mark as orphaned if resume fails
+        this.store.updateAgentStatus(record.agentId, 'orphaned', 'Failed to resume on daemon startup');
+        this.store.recordEvent({
+          agentId: record.agentId,
+          sdkSessionId: record.sdkSessionId,
+          eventType: 'agent.recovery_failed',
+          payloadJson: JSON.stringify({ reason: 'resume failed on daemon startup' }),
+          createdAt: nowIso(),
+        });
+      }
+    }
+  }
+
   async shutdown(): Promise<void> {
     for (const [agentId, live] of this.liveAgents.entries()) {
       await live.sdkSession.disconnect();
-      this.store.updateAgentStatus(agentId, 'stopped');
+      this.store.updateAgentStatus(agentId, 'orphaned');
     }
     this.liveAgents.clear();
+    this.attachSubscribers.clear();
     if (this.client) {
       await this.client.stop();
       this.client = null;
@@ -160,22 +186,142 @@ export class AgentSupervisor {
     return record;
   }
 
-  async sendToAgent(identifier: string, prompt: string): Promise<void> {
+  async sendToAgent(identifier: string, prompt: string): Promise<{ agentId: string; response: string | null }> {
     const live = this.resolveLiveAgent(identifier);
     if (!live) {
       throw new Error(`Agent not found or not loaded: ${identifier}`);
     }
 
+    const now = nowIso();
     this.store.recordMessage({
       agentId: live.agentId,
       direction: 'inbound',
       role: 'user',
       content: prompt,
-      createdAt: nowIso(),
+      createdAt: now,
       correlationId: null,
     });
 
-    await live.sdkSession.send({ prompt, mode: 'enqueue' });
+    this.store.updateAgentStatus(live.agentId, 'active');
+    this.store.recordEvent({
+      agentId: live.agentId,
+      sdkSessionId: this.store.findAgent(live.agentId)?.sdkSessionId ?? '',
+      eventType: 'message.sent',
+      payloadJson: JSON.stringify({ prompt: prompt.slice(0, 200) }),
+      createdAt: now,
+    });
+
+    const result = await live.sdkSession.send({ prompt, mode: 'enqueue' });
+    const responseText = typeof result === 'string' ? result :
+      (result && typeof result === 'object' && 'content' in result) ? String((result as { content?: unknown }).content ?? '') : null;
+
+    return { agentId: live.agentId, response: responseText };
+  }
+
+  inspectAgent(identifier: string): AgentRecord & { isLoaded: boolean; messageCount: number } {
+    const agent = this.store.findAgent(identifier);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${identifier}`);
+    }
+
+    const isLoaded = this.liveAgents.has(agent.agentId);
+    const messages = this.store.getMessages(agent.agentId, 1000);
+    return {
+      ...agent,
+      isLoaded,
+      messageCount: messages.length,
+    };
+  }
+
+  getRecentOutput(identifier: string, limit = 10): AgentMessageRecord[] {
+    const agent = this.store.findAgent(identifier);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${identifier}`);
+    }
+    return this.store.getRecentOutput(agent.agentId, limit);
+  }
+
+  attach(agentId: string, sink: EventSinkCallback): () => void {
+    const agent = this.store.findAgent(agentId);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${agentId}`);
+    }
+    const resolvedId = agent.agentId;
+    if (!this.attachSubscribers.has(resolvedId)) {
+      this.attachSubscribers.set(resolvedId, new Set());
+    }
+    this.attachSubscribers.get(resolvedId)!.add(sink);
+    // Return detach function
+    return () => {
+      this.attachSubscribers.get(resolvedId)?.delete(sink);
+    };
+  }
+
+  async resumeAgent(identifier: string): Promise<AgentRecord> {
+    const agent = this.store.findAgent(identifier);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${identifier}`);
+    }
+
+    if (this.liveAgents.has(agent.agentId)) {
+      // Already loaded — just return
+      return agent;
+    }
+
+    if (agent.status === 'stopped') {
+      throw new Error(`Cannot resume a stopped agent. Spawn a new one instead.`);
+    }
+
+    return this.resumeAgentInternal(agent);
+  }
+
+  private async resumeAgentInternal(record: AgentRecord): Promise<AgentRecord> {
+    if (!this.client) {
+      throw new Error('Copilot client is not started.');
+    }
+
+    const profile = getProfile(record.profile);
+    if (!profile) {
+      throw new Error(`Unknown profile for resume: ${record.profile}`);
+    }
+
+    let sdkSession: CopilotSessionLike;
+
+    if (this.client.resumeSession) {
+      sdkSession = await this.client.resumeSession(record.sdkSessionId, {
+        onPermissionRequest: approveAll,
+        streaming: true,
+        tools: [],
+        systemMessage: { content: profile.systemPrompt },
+      });
+    } else {
+      // Fallback: create a new session with the same ID
+      sdkSession = await this.client.createSession({
+        sessionId: record.sdkSessionId,
+        onPermissionRequest: approveAll,
+        streaming: true,
+        tools: [],
+        systemMessage: { content: profile.systemPrompt },
+        infiniteSessions: {
+          enabled: true,
+          backgroundCompactionThreshold: 0.8,
+          bufferExhaustionThreshold: 0.95,
+        },
+      });
+    }
+
+    this.attachSessionHandlers(record.agentId, sdkSession);
+    this.liveAgents.set(record.agentId, { agentId: record.agentId, profile, sdkSession });
+    this.store.updateAgentStatus(record.agentId, 'idle');
+    this.store.recordEvent({
+      agentId: record.agentId,
+      sdkSessionId: record.sdkSessionId,
+      eventType: 'agent.resumed',
+      payloadJson: JSON.stringify({ profile: record.profile }),
+      createdAt: nowIso(),
+    });
+
+    return this.store.findAgent(record.agentId)!;
   }
 
   getLogs(identifier: string, limit = 20) {
@@ -197,12 +343,21 @@ export class AgentSupervisor {
       await live.sdkSession.disconnect();
       this.liveAgents.delete(agent.agentId);
     }
+    this.attachSubscribers.delete(agent.agentId);
 
     if (deleteSession && this.client?.deleteSession) {
       await this.client.deleteSession(agent.sdkSessionId);
     }
 
     this.store.updateAgentStatus(agent.agentId, 'stopped');
+    this.store.recordEvent({
+      agentId: agent.agentId,
+      sdkSessionId: agent.sdkSessionId,
+      eventType: 'agent.stopped',
+      payloadJson: JSON.stringify({ deleteSession }),
+      createdAt: nowIso(),
+    });
+
     const updated = this.store.findAgent(agent.agentId);
     if (!updated) {
       throw new Error(`Agent disappeared during stop: ${agent.agentId}`);
@@ -222,6 +377,19 @@ export class AgentSupervisor {
     }
 
     return this.liveAgents.get(found.agentId) ?? null;
+  }
+
+  private notifySubscribers(agentId: string, type: string, data: unknown): void {
+    const subs = this.attachSubscribers.get(agentId);
+    if (!subs || subs.size === 0) return;
+    const event = { type, agentId, data, timestamp: nowIso() };
+    for (const sink of subs) {
+      try {
+        sink(event);
+      } catch {
+        // Don't let a bad subscriber crash the daemon
+      }
+    }
   }
 
   private attachSessionHandlers(agentId: string, session: CopilotSessionLike): void {
@@ -253,6 +421,7 @@ export class AgentSupervisor {
         payloadJson: JSON.stringify({ content }),
         createdAt: nowIso(),
       });
+      this.notifySubscribers(agentId, 'assistant.message', { content });
     });
 
     session.on?.('session.idle', () => {
@@ -268,6 +437,7 @@ export class AgentSupervisor {
         payloadJson: null,
         createdAt: nowIso(),
       });
+      this.notifySubscribers(agentId, 'session.idle', {});
     });
 
     session.on?.('session.error', (event: unknown) => {
@@ -284,6 +454,7 @@ export class AgentSupervisor {
         payloadJson: payload,
         createdAt: nowIso(),
       });
+      this.notifySubscribers(agentId, 'session.error', event);
     });
   }
 }

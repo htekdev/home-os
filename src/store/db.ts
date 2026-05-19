@@ -187,6 +187,66 @@ export class HomeOsStore {
     return stmt.all(agentId, limit) as AgentEventRecord[];
   }
 
+  getMessages(agentId: string, limit = 50): AgentMessageRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        message_id as messageId,
+        agent_id as agentId,
+        direction,
+        role,
+        content,
+        created_at as createdAt,
+        correlation_id as correlationId
+      FROM agent_messages
+      WHERE agent_id = ?
+      ORDER BY message_id DESC
+      LIMIT ?
+    `);
+    return stmt.all(agentId, limit) as AgentMessageRecord[];
+  }
+
+  getRecentOutput(agentId: string, limit = 10): AgentMessageRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        message_id as messageId,
+        agent_id as agentId,
+        direction,
+        role,
+        content,
+        created_at as createdAt,
+        correlation_id as correlationId
+      FROM agent_messages
+      WHERE agent_id = ? AND direction = 'outbound'
+      ORDER BY message_id DESC
+      LIMIT ?
+    `);
+    return stmt.all(agentId, limit) as AgentMessageRecord[];
+  }
+
+  getResumableAgents(): AgentRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        agent_id as agentId,
+        profile,
+        label,
+        sdk_session_id as sdkSessionId,
+        cwd,
+        status,
+        model,
+        tool_profile as toolProfile,
+        mcp_profile as mcpProfile,
+        created_at as createdAt,
+        last_active_at as lastActiveAt,
+        stopped_at as stoppedAt,
+        last_error as lastError,
+        metadata_json as metadataJson
+      FROM agents
+      WHERE status IN ('active', 'idle', 'orphaned')
+      ORDER BY last_active_at DESC
+    `);
+    return stmt.all() as AgentRecord[];
+  }
+
   close(): void {
     this.db.close();
   }

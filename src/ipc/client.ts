@@ -1,4 +1,4 @@
-import type { AgentEventRecord, AgentRecord, DaemonStatus } from '../types.js';
+import type { AgentEventRecord, AgentRecord, AgentMessageRecord, DaemonStatus } from '../types.js';
 
 const DEFAULT_PORT = 44123;
 
@@ -34,10 +34,21 @@ export async function spawnAgent(body: { profile: string; cwd?: string; label?: 
   });
 }
 
-export async function sendToAgent(agentId: string, prompt: string) {
-  return request(`/agents/${encodeURIComponent(agentId)}/send`, {
+export async function sendToAgent(agentId: string, prompt: string): Promise<{ ok: boolean; agentId: string; response: string | null }> {
+  return request<{ ok: boolean; agentId: string; response: string | null }>(`/agents/${encodeURIComponent(agentId)}/send`, {
     method: 'POST',
     body: JSON.stringify({ prompt }),
+  });
+}
+
+export async function inspectAgent(agentId: string): Promise<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number } }> {
+  return request<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number } }>(`/agents/${encodeURIComponent(agentId)}/inspect`);
+}
+
+export async function resumeAgent(agentId: string): Promise<{ agent: AgentRecord }> {
+  return request<{ agent: AgentRecord }>(`/agents/${encodeURIComponent(agentId)}/resume`, {
+    method: 'POST',
+    body: JSON.stringify({}),
   });
 }
 
@@ -57,4 +68,8 @@ export async function stopDaemon() {
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+export function getAttachUrl(agentId: string, replay = true, replayLimit = 10): string {
+  return `http://127.0.0.1:${DEFAULT_PORT}/agents/${encodeURIComponent(agentId)}/attach?replay=${replay}&replay_limit=${replayLimit}`;
 }

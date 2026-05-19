@@ -174,7 +174,34 @@ node ./bin/home-os.js logs home-assistant --limit 5
 node ./bin/home-os.js stop-daemon
 ```
 
-Built-in profiles in Phase 1:
+### Home OS CLI (Phase 2)
+
+Phase 2 expands the runtime with message persistence, live streaming, inspect, and daemon recovery.
+
+```bash
+# Send a message to an agent — persisted and dispatched
+node ./bin/home-os.js send home-assistant "What's on the calendar today?"
+
+# Attach to an agent — replays recent output then streams live events
+node ./bin/home-os.js attach home-assistant
+# Use --no-replay to skip history, --replay-limit 5 to limit
+
+# Inspect full metadata for an agent
+node ./bin/home-os.js inspect home-assistant
+
+# Resume an orphaned/persisted agent after daemon restart
+node ./bin/home-os.js resume home-assistant
+```
+
+Key Phase 2 behaviors:
+- **send** — persists inbound message to SQLite, dispatches to SDK session, returns response
+- **attach** — SSE stream replaying recent output, then live-tailing all events
+- **inspect** — shows full agent metadata (profile, tools, session ID, loaded state, message count)
+- **resume** — reloads an orphaned agent that persists in SQLite but isn't loaded in memory
+- **Daemon recovery** — on startup, daemon auto-resumes all active/idle/orphaned agents
+- **Graceful shutdown** — marks agents as `orphaned` (not `stopped`) so they can be recovered
+
+Built-in profiles:
 - `home-assistant`
 - `nicu-care`
 - `platform-manager`

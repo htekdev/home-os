@@ -18,6 +18,10 @@ function sendJson(response: ServerResponse, statusCode: number, body: unknown): 
   response.end(JSON.stringify(body));
 }
 
+function sendSSE(response: ServerResponse, event: string, data: unknown): void {
+  response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 export function createIpcServer(supervisor: AgentSupervisor, port: number) {
   const server = createServer(async (request, response) => {
     try {
@@ -44,8 +48,55 @@ export function createIpcServer(supervisor: AgentSupervisor, port: number) {
       if (method === 'POST' && url.pathname.match(/^\/agents\/[^/]+\/send$/)) {
         const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
         const body = await readBody(request) as { prompt: string };
-        await supervisor.sendToAgent(identifier, body.prompt);
-        sendJson(response, 200, { ok: true });
+        const result = await supervisor.sendToAgent(identifier, body.prompt);
+        sendJson(response, 200, { ok: true, agentId: result.agentId, response: result.response });
+        return;
+      }
+
+      if (method === 'GET' && url.pathname.match(/^\/agents\/[^/]+\/inspect$/)) {
+        const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const info = supervisor.inspectAgent(identifier);
+        sendJson(response, 200, { agent: info });
+        return;
+      }
+
+      if (method === 'GET' && url.pathname.match(/^\/agents\/[^/]+\/attach$/)) {
+        const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const replay = url.searchParams.get('replay') !== 'false';
+        const replayLimit = Number(url.searchParams.get('replay_limit') ?? '10');
+
+        // SSE stream
+        response.writeHead(200, {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          'connection': 'keep-alive',
+        });
+
+        // Replay recent output first
+        if (replay) {
+          const recent = supervisor.getRecentOutput(identifier, replayLimit);
+          for (const msg of recent.reverse()) {
+            sendSSE(response, 'replay', { role: msg.role, content: msg.content, timestamp: msg.createdAt });
+          }
+        }
+
+        sendSSE(response, 'attached', { agentId: identifier, timestamp: new Date().toISOString() });
+
+        // Subscribe to live events
+        const detach = supervisor.attach(identifier, (event) => {
+          sendSSE(response, event.type, event.data);
+        });
+
+        request.on('close', () => {
+          detach();
+        });
+        return;
+      }
+
+      if (method === 'POST' && url.pathname.match(/^\/agents\/[^/]+\/resume$/)) {
+        const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const agent = await supervisor.resumeAgent(identifier);
+        sendJson(response, 200, { agent });
         return;
       }
 
