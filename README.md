@@ -201,10 +201,42 @@ Key Phase 2 behaviors:
 - **Daemon recovery** — on startup, daemon auto-resumes all active/idle/orphaned agents
 - **Graceful shutdown** — marks agents as `orphaned` (not `stopped`) so they can be recovered
 
+### Home OS CLI (Phase 3)
+
+Phase 3 adds tool registration, bootstrap prompts, streaming, YAML profiles, and error recovery.
+
+```bash
+# List agents with table formatting and filters
+node ./bin/home-os.js list --active
+node ./bin/home-os.js list --stopped
+node ./bin/home-os.js list --status error
+
+# Streaming send — response chunks arrive in real-time
+node ./bin/home-os.js send home-assistant "Analyze this data" --stream
+
+# Spawn a YAML-defined profile (from config/profiles/*.yaml)
+node ./bin/home-os.js spawn coding-assistant --label my-dev
+
+# Inspect shows resolved tools
+node ./bin/home-os.js inspect home-assistant
+```
+
+Key Phase 3 behaviors:
+- **Bootstrap prompts** — after spawn, the profile's `bootstrapPrompt` is automatically sent; response persisted
+- **Tool registration** — profiles declare `baseTools` (view/glob/grep/shell or groups like `file-tools`/`dev-tools`); resolved and registered with SDK sessions
+- **Streaming send** — `--stream` flag streams response chunks via SSE as they arrive
+- **YAML profiles** — place `*.yaml` files in `config/profiles/` to define custom profiles without code changes
+- **Error recovery** — if `sendToAgent` fails, agent is marked `error` status with the error recorded (visible in `inspect`)
+- **Tool execution events** — `tool_execution_start/end` events are persisted and forwarded to attach subscribers
+- **Improved list** — table formatting, ANSI status colors, `--active`/`--stopped`/`--status` filters
+
 Built-in profiles:
-- `home-assistant`
-- `nicu-care`
-- `platform-manager`
+- `home-assistant` (file-tools)
+- `nicu-care` (file-tools)
+- `platform-manager` (dev-tools)
+
+YAML-defined profiles (config/profiles/):
+- `coding-assistant` (dev-tools)
 
 ### Customize for Your Family
 

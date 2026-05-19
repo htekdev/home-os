@@ -34,7 +34,9 @@ export function createIpcServer(supervisor: AgentSupervisor, port: number) {
       }
 
       if (method === 'GET' && url.pathname === '/agents') {
-        sendJson(response, 200, { agents: supervisor.listAgents() });
+        const statusFilter = url.searchParams.get('status') ?? undefined;
+        const filter = statusFilter ? { status: statusFilter } : undefined;
+        sendJson(response, 200, { agents: supervisor.listAgents(filter) });
         return;
       }
 
@@ -47,9 +49,29 @@ export function createIpcServer(supervisor: AgentSupervisor, port: number) {
 
       if (method === 'POST' && url.pathname.match(/^\/agents\/[^/]+\/send$/)) {
         const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
-        const body = await readBody(request) as { prompt: string };
-        const result = await supervisor.sendToAgent(identifier, body.prompt);
-        sendJson(response, 200, { ok: true, agentId: result.agentId, response: result.response });
+        const body = await readBody(request) as { prompt: string; stream?: boolean };
+
+        if (body.stream) {
+          // Streaming send — SSE response
+          response.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            'connection': 'keep-alive',
+          });
+
+          try {
+            const result = await supervisor.sendToAgent(identifier, body.prompt, (chunk) => {
+              sendSSE(response, chunk.type, chunk);
+            });
+            sendSSE(response, 'result', { agentId: result.agentId, response: result.response });
+          } catch (err) {
+            sendSSE(response, 'error', { error: err instanceof Error ? err.message : String(err) });
+          }
+          response.end();
+        } else {
+          const result = await supervisor.sendToAgent(identifier, body.prompt);
+          sendJson(response, 200, { ok: true, agentId: result.agentId, response: result.response });
+        }
         return;
       }
 

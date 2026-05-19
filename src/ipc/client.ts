@@ -23,8 +23,9 @@ export async function getDaemonStatus(): Promise<DaemonStatus> {
   return request<DaemonStatus>('/health');
 }
 
-export async function listAgents(): Promise<{ agents: AgentRecord[] }> {
-  return request<{ agents: AgentRecord[] }>('/agents');
+export async function listAgents(filter?: { status?: string }): Promise<{ agents: AgentRecord[] }> {
+  const params = filter?.status ? `?status=${encodeURIComponent(filter.status)}` : '';
+  return request<{ agents: AgentRecord[] }>(`/agents${params}`);
 }
 
 export async function spawnAgent(body: { profile: string; cwd?: string; label?: string; model?: string }): Promise<{ agent: AgentRecord }> {
@@ -41,8 +42,12 @@ export async function sendToAgent(agentId: string, prompt: string): Promise<{ ok
   });
 }
 
-export async function inspectAgent(agentId: string): Promise<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number } }> {
-  return request<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number } }>(`/agents/${encodeURIComponent(agentId)}/inspect`);
+export function getStreamingSendUrl(agentId: string): string {
+  return `http://127.0.0.1:${DEFAULT_PORT}/agents/${encodeURIComponent(agentId)}/send`;
+}
+
+export async function inspectAgent(agentId: string): Promise<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number; tools: string[] } }> {
+  return request<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number; tools: string[] } }>(`/agents/${encodeURIComponent(agentId)}/inspect`);
 }
 
 export async function resumeAgent(agentId: string): Promise<{ agent: AgentRecord }> {

@@ -1,6 +1,6 @@
 {
   "name": "home-os",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Home OS — persistent Home OS CLI and daemon built on the GitHub Copilot SDK.",
   "type": "module",
   "main": "dist/daemon/index.js",
@@ -45,7 +45,8 @@
   "dependencies": {
     "@github/copilot-sdk": "^0.2.1",
     "better-sqlite3": "^11.8.1",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",

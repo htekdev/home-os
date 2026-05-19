@@ -1,10 +1,13 @@
 import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import { getProfile } from '../profiles/index.js';
 import { HomeOsStore } from '../store/db.js';
+import { resolveTools, type ToolDefinition } from '../tools/index.js';
 import type { AgentProfile, AgentRecord, AgentMessageRecord, DaemonStatus, SpawnAgentRequest } from '../types.js';
 import { DB_PATH, HOME_OS_ROOT } from '../utils/paths.js';
 
 export type EventSinkCallback = (event: { type: string; agentId: string; data: unknown; timestamp: string }) => void;
+
+export type StreamChunkCallback = (chunk: { type: 'text' | 'tool_start' | 'tool_end' | 'done'; content?: string; toolName?: string }) => void;
 
 export interface CopilotSessionLike {
   sessionId: string;
@@ -25,12 +28,14 @@ interface LiveAgentSession {
   agentId: string;
   profile: AgentProfile;
   sdkSession: CopilotSessionLike;
+  tools: ToolDefinition[];
 }
 
 interface SupervisorOptions {
   port: number;
   store?: HomeOsStore;
   clientFactory?: () => CopilotClientLike;
+  skipBootstrap?: boolean;
 }
 
 function nowIso(): string {
@@ -51,6 +56,7 @@ export class AgentSupervisor {
   private readonly clientFactory: () => CopilotClientLike;
   private readonly liveAgents = new Map<string, LiveAgentSession>();
   private readonly attachSubscribers = new Map<string, Set<EventSinkCallback>>();
+  private readonly skipBootstrap: boolean;
   private client: CopilotClientLike | null = null;
   private startedAt = nowIso();
   private lastError: string | null = null;
@@ -60,6 +66,7 @@ export class AgentSupervisor {
     this.port = options.port;
     this.store = options.store ?? new HomeOsStore();
     this.clientFactory = options.clientFactory ?? (() => new CopilotClient({}) as unknown as CopilotClientLike);
+    this.skipBootstrap = options.skipBootstrap ?? false;
   }
 
   async start(): Promise<void> {
@@ -123,8 +130,10 @@ export class AgentSupervisor {
     };
   }
 
-  listAgents(): AgentRecord[] {
-    return this.store.listAgents();
+  listAgents(filter?: { status?: string }): AgentRecord[] {
+    const all = this.store.listAgents();
+    if (!filter?.status) return all;
+    return all.filter((a) => a.status === filter.status);
   }
 
   async spawnAgent(request: SpawnAgentRequest): Promise<AgentRecord> {
@@ -142,11 +151,15 @@ export class AgentSupervisor {
     const cwd = request.cwd ?? profile.cwd ?? HOME_OS_ROOT;
     const now = nowIso();
 
+    // Resolve tools from profile
+    const tools = resolveTools(profile.baseTools);
+    const toolNames = tools.map((t) => t.name);
+
     const sdkSession = await this.client.createSession({
       sessionId,
       onPermissionRequest: approveAll,
       streaming: true,
-      tools: [],
+      tools,
       systemMessage: { content: profile.systemPrompt },
       infiniteSessions: {
         enabled: true,
@@ -163,30 +176,79 @@ export class AgentSupervisor {
       cwd,
       status: 'active',
       model: request.model ?? profile.defaultModel ?? null,
-      toolProfile: 'phase1-base',
+      toolProfile: toolNames.length > 0 ? toolNames.join(',') : 'none',
       mcpProfile: profile.mcpProfile ?? null,
       createdAt: now,
       lastActiveAt: now,
       stoppedAt: null,
       lastError: null,
-      metadataJson: JSON.stringify({ description: profile.description }),
+      metadataJson: JSON.stringify({ description: profile.description, tools: toolNames }),
     };
 
     this.attachSessionHandlers(record.agentId, sdkSession);
-    this.liveAgents.set(record.agentId, { agentId, profile, sdkSession });
+    this.liveAgents.set(record.agentId, { agentId, profile, sdkSession, tools });
     this.store.upsertAgent(record);
     this.store.recordEvent({
       agentId: record.agentId,
       sdkSessionId: record.sdkSessionId,
       eventType: 'agent.spawned',
-      payloadJson: JSON.stringify({ profile: record.profile, cwd: record.cwd }),
+      payloadJson: JSON.stringify({ profile: record.profile, cwd: record.cwd, tools: toolNames }),
       createdAt: now,
     });
+
+    // Bootstrap prompt — send initial message if profile has one
+    if (!this.skipBootstrap && profile.bootstrapPrompt) {
+      try {
+        const bootstrapResult = await sdkSession.send({ prompt: profile.bootstrapPrompt, mode: 'enqueue' });
+        const bootstrapResponse = typeof bootstrapResult === 'string'
+          ? bootstrapResult
+          : (bootstrapResult && typeof bootstrapResult === 'object' && 'content' in bootstrapResult)
+            ? String((bootstrapResult as { content?: unknown }).content ?? '')
+            : null;
+
+        this.store.recordMessage({
+          agentId: record.agentId,
+          direction: 'inbound',
+          role: 'system',
+          content: `[bootstrap] ${profile.bootstrapPrompt}`,
+          createdAt: nowIso(),
+          correlationId: null,
+        });
+
+        if (bootstrapResponse) {
+          this.store.recordMessage({
+            agentId: record.agentId,
+            direction: 'outbound',
+            role: 'assistant',
+            content: bootstrapResponse,
+            createdAt: nowIso(),
+            correlationId: null,
+          });
+        }
+
+        this.store.recordEvent({
+          agentId: record.agentId,
+          sdkSessionId: record.sdkSessionId,
+          eventType: 'agent.bootstrap_complete',
+          payloadJson: JSON.stringify({ response: bootstrapResponse?.slice(0, 200) }),
+          createdAt: nowIso(),
+        });
+      } catch (err) {
+        // Bootstrap failure is non-fatal
+        this.store.recordEvent({
+          agentId: record.agentId,
+          sdkSessionId: record.sdkSessionId,
+          eventType: 'agent.bootstrap_failed',
+          payloadJson: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+          createdAt: nowIso(),
+        });
+      }
+    }
 
     return record;
   }
 
-  async sendToAgent(identifier: string, prompt: string): Promise<{ agentId: string; response: string | null }> {
+  async sendToAgent(identifier: string, prompt: string, streamCallback?: StreamChunkCallback): Promise<{ agentId: string; response: string | null }> {
     const live = this.resolveLiveAgent(identifier);
     if (!live) {
       throw new Error(`Agent not found or not loaded: ${identifier}`);
@@ -211,14 +273,54 @@ export class AgentSupervisor {
       createdAt: now,
     });
 
-    const result = await live.sdkSession.send({ prompt, mode: 'enqueue' });
-    const responseText = typeof result === 'string' ? result :
-      (result && typeof result === 'object' && 'content' in result) ? String((result as { content?: unknown }).content ?? '') : null;
+    try {
+      const result = await live.sdkSession.send({ prompt, mode: 'enqueue' });
+      const responseText = typeof result === 'string' ? result :
+        (result && typeof result === 'object' && 'content' in result) ? String((result as { content?: unknown }).content ?? '') : null;
 
-    return { agentId: live.agentId, response: responseText };
+      // Persist outbound response
+      if (responseText) {
+        this.store.recordMessage({
+          agentId: live.agentId,
+          direction: 'outbound',
+          role: 'assistant',
+          content: responseText,
+          createdAt: nowIso(),
+          correlationId: null,
+        });
+      }
+
+      // Stream callback for streaming send
+      if (streamCallback) {
+        if (responseText) {
+          streamCallback({ type: 'text', content: responseText });
+        }
+        streamCallback({ type: 'done' });
+      }
+
+      return { agentId: live.agentId, response: responseText };
+    } catch (err) {
+      // Error recovery — mark agent as error, record it, expose in inspect
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.store.updateAgentStatus(live.agentId, 'error', errorMsg);
+      this.store.recordEvent({
+        agentId: live.agentId,
+        sdkSessionId: this.store.findAgent(live.agentId)?.sdkSessionId ?? '',
+        eventType: 'agent.send_error',
+        payloadJson: JSON.stringify({ error: errorMsg, prompt: prompt.slice(0, 200) }),
+        createdAt: nowIso(),
+      });
+      this.notifySubscribers(live.agentId, 'agent.error', { error: errorMsg });
+
+      if (streamCallback) {
+        streamCallback({ type: 'done' });
+      }
+
+      throw new Error(`Send failed for ${live.agentId}: ${errorMsg}`);
+    }
   }
 
-  inspectAgent(identifier: string): AgentRecord & { isLoaded: boolean; messageCount: number } {
+  inspectAgent(identifier: string): AgentRecord & { isLoaded: boolean; messageCount: number; tools: string[] } {
     const agent = this.store.findAgent(identifier);
     if (!agent) {
       throw new Error(`Unknown agent: ${identifier}`);
@@ -226,10 +328,14 @@ export class AgentSupervisor {
 
     const isLoaded = this.liveAgents.has(agent.agentId);
     const messages = this.store.getMessages(agent.agentId, 1000);
+    const live = this.liveAgents.get(agent.agentId);
+    const tools = live ? live.tools.map((t) => t.name) : [];
+
     return {
       ...agent,
       isLoaded,
       messageCount: messages.length,
+      tools,
     };
   }
 
@@ -285,13 +391,14 @@ export class AgentSupervisor {
       throw new Error(`Unknown profile for resume: ${record.profile}`);
     }
 
+    const tools = resolveTools(profile.baseTools);
     let sdkSession: CopilotSessionLike;
 
     if (this.client.resumeSession) {
       sdkSession = await this.client.resumeSession(record.sdkSessionId, {
         onPermissionRequest: approveAll,
         streaming: true,
-        tools: [],
+        tools,
         systemMessage: { content: profile.systemPrompt },
       });
     } else {
@@ -300,7 +407,7 @@ export class AgentSupervisor {
         sessionId: record.sdkSessionId,
         onPermissionRequest: approveAll,
         streaming: true,
-        tools: [],
+        tools,
         systemMessage: { content: profile.systemPrompt },
         infiniteSessions: {
           enabled: true,
@@ -311,7 +418,7 @@ export class AgentSupervisor {
     }
 
     this.attachSessionHandlers(record.agentId, sdkSession);
-    this.liveAgents.set(record.agentId, { agentId: record.agentId, profile, sdkSession });
+    this.liveAgents.set(record.agentId, { agentId: record.agentId, profile, sdkSession, tools });
     this.store.updateAgentStatus(record.agentId, 'idle');
     this.store.recordEvent({
       agentId: record.agentId,
@@ -422,6 +529,39 @@ export class AgentSupervisor {
         createdAt: nowIso(),
       });
       this.notifySubscribers(agentId, 'assistant.message', { content });
+    });
+
+    // Tool execution lifecycle events — Phase 3
+    session.on?.('tool_execution_start', (event: unknown) => {
+      const payload = event as { toolName?: string; callId?: string } | null;
+      const toolName = payload?.toolName ?? 'unknown';
+      const agent = this.store.findAgent(agentId);
+      if (!agent) return;
+
+      this.store.recordEvent({
+        agentId,
+        sdkSessionId: agent.sdkSessionId,
+        eventType: 'tool_execution_start',
+        payloadJson: JSON.stringify({ toolName, callId: payload?.callId }),
+        createdAt: nowIso(),
+      });
+      this.notifySubscribers(agentId, 'tool_execution_start', { toolName });
+    });
+
+    session.on?.('tool_execution_end', (event: unknown) => {
+      const payload = event as { toolName?: string; callId?: string; durationMs?: number } | null;
+      const toolName = payload?.toolName ?? 'unknown';
+      const agent = this.store.findAgent(agentId);
+      if (!agent) return;
+
+      this.store.recordEvent({
+        agentId,
+        sdkSessionId: agent.sdkSessionId,
+        eventType: 'tool_execution_end',
+        payloadJson: JSON.stringify({ toolName, callId: payload?.callId, durationMs: payload?.durationMs }),
+        createdAt: nowIso(),
+      });
+      this.notifySubscribers(agentId, 'tool_execution_end', { toolName, durationMs: payload?.durationMs });
     });
 
     session.on?.('session.idle', () => {

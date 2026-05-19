@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { getAgentLogs, getAttachUrl, getDaemonStatus, inspectAgent, listAgents, resumeAgent, sendToAgent, spawnAgent, stopAgent, stopDaemon } from '../ipc/client.js';
+import { getAgentLogs, getAttachUrl, getDaemonStatus, getStreamingSendUrl, inspectAgent, listAgents, resumeAgent, sendToAgent, spawnAgent, stopAgent, stopDaemon } from '../ipc/client.js';
 import { HOME_OS_ROOT } from '../utils/paths.js';
 
 const DEFAULT_PORT = 44123;
@@ -43,8 +43,45 @@ async function ensureDaemonStarted(): Promise<void> {
   throw new Error('Timed out waiting for home-osd to start.');
 }
 
+// --- Table formatting helpers ---
+
+const STATUS_COLORS: Record<string, string> = {
+  active: '\x1b[32m',   // green
+  idle: '\x1b[36m',     // cyan
+  stopped: '\x1b[90m',  // gray
+  error: '\x1b[31m',    // red
+  orphaned: '\x1b[33m', // yellow
+};
+const RESET = '\x1b[0m';
+
+function colorize(status: string): string {
+  const color = STATUS_COLORS[status] ?? '';
+  return `${color}${status}${RESET}`;
+}
+
+function padRight(str: string, len: number): string {
+  return str.length >= len ? str : str + ' '.repeat(len - str.length);
+}
+
+function formatTable(agents: Array<{ agentId: string; profile: string; label: string | null; status: string; lastActiveAt: string }>): string {
+  if (agents.length === 0) return 'No agents found.';
+
+  const header = `${padRight('ID', 18)} ${padRight('PROFILE', 20)} ${padRight('LABEL', 16)} ${padRight('STATUS', 12)} LAST ACTIVE`;
+  const sep = '-'.repeat(80);
+  const rows = agents.map((a) => {
+    const id = padRight(a.agentId, 18);
+    const profile = padRight(a.profile, 20);
+    const label = padRight(a.label ?? '-', 16);
+    const status = padRight(colorize(a.status), 12 + (STATUS_COLORS[a.status] ? 9 : 0)); // account for ANSI codes
+    const lastActive = formatRelative(a.lastActiveAt);
+    return `${id} ${profile} ${label} ${status} ${lastActive}`;
+  });
+
+  return [header, sep, ...rows].join('\n');
+}
+
 const program = new Command();
-program.name('home-os').description('Home OS CLI for persistent Copilot SDK sessions');
+program.name('home-os').description('Home OS CLI for persistent Copilot SDK sessions').version('1.3.0');
 
 program
   .command('start')
@@ -76,40 +113,98 @@ program
   .action(async (profile: string, options: { cwd?: string; label?: string; model?: string }) => {
     await ensureDaemonStarted();
     const response = await spawnAgent({ profile, cwd: options.cwd, label: options.label, model: options.model });
-    const agent = response.agent as { agentId: string; profile: string; sdkSessionId: string; cwd: string; status: string };
+    const agent = response.agent as { agentId: string; profile: string; sdkSessionId: string; cwd: string; status: string; toolProfile: string };
     console.log(`Spawned ${agent.profile} as ${agent.agentId}`);
     console.log(`  session: ${agent.sdkSessionId}`);
     console.log(`  cwd: ${agent.cwd}`);
+    console.log(`  tools: ${agent.toolProfile}`);
     console.log(`  status: ${agent.status}`);
   });
 
 program
   .command('list')
   .description('List tracked Home OS agents')
-  .action(async () => {
+  .option('--active', 'Show only active agents')
+  .option('--stopped', 'Show only stopped agents')
+  .option('--status <status>', 'Filter by status (active, idle, stopped, error, orphaned)')
+  .action(async (options: { active?: boolean; stopped?: boolean; status?: string }) => {
     await ensureDaemonStarted();
-    const response = await listAgents();
-    const agents = response.agents as Array<{ agentId: string; profile: string; status: string; cwd: string; lastActiveAt: string }>;
-    if (agents.length === 0) {
-      console.log('No agents tracked yet.');
-      return;
+
+    let filter: { status?: string } | undefined;
+    if (options.active) {
+      filter = { status: 'active' };
+    } else if (options.stopped) {
+      filter = { status: 'stopped' };
+    } else if (options.status) {
+      filter = { status: options.status };
     }
-    console.log('ID\t\t\tPROFILE\t\t\tSTATUS\t\tLAST ACTIVE');
-    for (const agent of agents) {
-      const lastActive = formatRelative(agent.lastActiveAt);
-      console.log(`${agent.agentId}\t${agent.profile}\t\t${agent.status}\t\t${lastActive}`);
-    }
+
+    const response = await listAgents(filter);
+    const agents = response.agents as Array<{ agentId: string; profile: string; label: string | null; status: string; lastActiveAt: string }>;
+    console.log(formatTable(agents));
   });
 
 program
   .command('send <agent> <prompt>')
   .description('Send a prompt to a persistent agent session')
-  .action(async (agent: string, prompt: string) => {
+  .option('--stream', 'Stream response chunks as they arrive')
+  .action(async (agent: string, prompt: string, options: { stream?: boolean }) => {
     await ensureDaemonStarted();
-    const result = await sendToAgent(agent, prompt);
-    console.log(`Message sent to ${result.agentId}`);
-    if (result.response) {
-      console.log(`\nResponse:\n${result.response}`);
+
+    if (options.stream) {
+      // Streaming mode via SSE
+      const url = getStreamingSendUrl(agent);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ prompt, stream: true }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
+        throw new Error(String(payload.error ?? response.statusText));
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response stream available');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'text' && data.content) {
+                process.stdout.write(data.content);
+              } else if (data.type === 'tool_start') {
+                process.stdout.write(`\n[tool: ${data.toolName}] `);
+              } else if (data.type === 'done') {
+                process.stdout.write('\n');
+              } else if (data.response) {
+                // Final result event
+                process.stdout.write(`${data.response}\n`);
+              }
+            } catch {
+              // skip parse errors
+            }
+          }
+        }
+      }
+    } else {
+      const result = await sendToAgent(agent, prompt);
+      console.log(`Message sent to ${result.agentId}`);
+      if (result.response) {
+        console.log(`\nResponse:\n${result.response}`);
+      }
     }
   });
 
@@ -151,6 +246,8 @@ program
             console.log(`[assistant] ${data.content}`);
           } else if (data.role && data.content) {
             console.log(`[${data.role}] ${data.content}`);
+          } else if (data.toolName) {
+            console.log(`[tool] ${data.toolName}`);
           } else if (data.agentId) {
             console.log(`[system] attached to ${data.agentId}`);
           }
@@ -188,12 +285,12 @@ program
     console.log(`Agent: ${info.agentId}`);
     console.log(`  Profile:       ${info.profile}`);
     console.log(`  Label:         ${info.label ?? '(none)'}`);
-    console.log(`  Status:        ${info.status}`);
+    console.log(`  Status:        ${colorize(info.status)}`);
     console.log(`  Loaded:        ${info.isLoaded ? 'yes' : 'no'}`);
     console.log(`  SDK Session:   ${info.sdkSessionId}`);
     console.log(`  CWD:           ${info.cwd}`);
     console.log(`  Model:         ${info.model ?? '(default)'}`);
-    console.log(`  Tool Profile:  ${info.toolProfile ?? '(none)'}`);
+    console.log(`  Tools:         ${info.tools?.length ? info.tools.join(', ') : info.toolProfile ?? '(none)'}`);
     console.log(`  MCP Profile:   ${info.mcpProfile ?? '(none)'}`);
     console.log(`  Messages:      ${info.messageCount}`);
     console.log(`  Created:       ${info.createdAt}`);
