@@ -238,6 +238,35 @@ Built-in profiles:
 YAML-defined profiles (config/profiles/):
 - `coding-assistant` (dev-tools)
 
+### Home OS CLI (Phase 4)
+
+Phase 4 adds agent-to-agent messaging, conversation history, metrics, hot-reload profiles, enhanced health checks, and configuration validation.
+
+```bash
+# Show full conversation history for an agent
+node ./bin/home-os.js history home-assistant
+node ./bin/home-os.js history home-assistant --limit 50
+
+# View agent metrics/statistics
+node ./bin/home-os.js stats home-assistant
+
+# Send a message between agents (agent-to-agent IPC)
+node ./bin/home-os.js message home-assistant nicu-care "Check pumping schedule"
+
+# Detailed health check with per-agent status
+curl http://127.0.0.1:44123/health?detailed=true
+```
+
+Key Phase 4 behaviors:
+- **Agent-to-agent messaging** — agents can send messages to each other via `sendAgentMessage`; delivered as system prompts to target sessions, queued if target is offline
+- **Conversation history** — `home-os history <agent>` shows full chronological conversation with colored roles and timestamps
+- **Agent metrics** — `home-os stats <agent>` shows uptime, message counts (in/out), tool call count, and estimated memory usage
+- **Hot-reload profiles** — daemon watches `config/profiles/` for YAML changes; profiles are reloaded automatically without restart
+- **Enhanced health endpoint** — `?detailed=true` on `/health` returns per-agent health info (status, memory, message count, last error)
+- **Configuration validation** — YAML profiles are validated against schema on load; clear error messages for invalid fields, bad names, unknown tools, malformed MCP configs
+- **MCP server config** — profiles can declare `mcpServers` array with name, command, args, env for MCP integration
+- **50 tests passing** (target was 40+)
+
 ### Customize for Your Family
 
 1. **Edit `data/constitution.md`** — Set your family's rules and preferences

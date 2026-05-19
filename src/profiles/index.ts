@@ -1,6 +1,10 @@
-import type { AgentProfile } from '../types.js';
+import type { AgentProfile, ProfileValidationResult } from '../types.js';
 import { HOME_OS_ROOT } from '../utils/paths.js';
-import { loadYamlProfiles } from './loader.js';
+import { loadYamlProfiles, loadYamlProfilesWithValidation, startProfileWatcher, stopProfileWatcher, onProfileChange } from './loader.js';
+
+export { startProfileWatcher, stopProfileWatcher, onProfileChange } from './loader.js';
+export { validateProfile } from './validator.js';
+export { loadYamlProfilesWithValidation } from './loader.js';
 
 const BASE_PROMPT = [
   'You are a persistent Home OS agent managed by the Home OS daemon.',
@@ -58,9 +62,26 @@ function getAllProfiles(): Record<string, AgentProfile> {
   return merged;
 }
 
-/** Clear cached profiles — useful for testing after adding new YAML files */
+/** Clear cached profiles — useful for testing and hot-reload */
 export function clearProfileCache(): void {
   _cachedProfiles = null;
+}
+
+/**
+ * Enable hot-reload: watches profiles dir and clears cache on changes.
+ * Returns a cleanup function.
+ */
+export function enableHotReload(onChange?: (profiles: AgentProfile[]) => void): () => void {
+  onProfileChange((profiles, _errors) => {
+    clearProfileCache();
+    if (onChange) {
+      onChange(listProfiles());
+    }
+  });
+  startProfileWatcher();
+  return () => {
+    stopProfileWatcher();
+  };
 }
 
 export function listProfiles(): AgentProfile[] {

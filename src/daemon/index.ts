@@ -8,7 +8,7 @@ const port = portArgIndex >= 0 ? Number(process.argv[portArgIndex + 1]) : 44123;
 
 async function main(): Promise<void> {
   ensureRuntimeDir();
-  const supervisor = new AgentSupervisor({ port });
+  const supervisor = new AgentSupervisor({ port, enableHotReload: true });
   await supervisor.start();
   const server = createIpcServer(supervisor, port);
 

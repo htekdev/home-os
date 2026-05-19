@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { AgentEventRecord, AgentMessageRecord, AgentRecord, AgentStatus } from '../types.js';
+import type { AgentEventRecord, AgentMessageRecord, AgentRecord, AgentStats, AgentStatus } from '../types.js';
 import { DB_PATH, ensureRuntimeDir } from '../utils/paths.js';
 
 function nowIso(): string {
@@ -56,9 +56,20 @@ export class HomeOsStore {
         correlation_id TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS agent_ipc (
+        ipc_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_agent TEXT NOT NULL,
+        to_agent TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
       CREATE INDEX IF NOT EXISTS idx_events_agent ON agent_events(agent_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_agent ON agent_messages(agent_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ipc_to ON agent_ipc(to_agent, status);
     `);
   }
 
@@ -245,6 +256,82 @@ export class HomeOsStore {
       ORDER BY last_active_at DESC
     `);
     return stmt.all() as AgentRecord[];
+  }
+
+  // --- Agent-to-Agent IPC ---
+
+  sendIpcMessage(fromAgent: string, toAgent: string, content: string): number {
+    const stmt = this.db.prepare(`
+      INSERT INTO agent_ipc (from_agent, to_agent, content, status, created_at)
+      VALUES (?, ?, ?, 'pending', ?)
+    `);
+    const result = stmt.run(fromAgent, toAgent, content, nowIso());
+    return Number(result.lastInsertRowid);
+  }
+
+  getPendingIpcMessages(toAgent: string): Array<{ ipcId: number; fromAgent: string; toAgent: string; content: string; createdAt: string }> {
+    const stmt = this.db.prepare(`
+      SELECT ipc_id as ipcId, from_agent as fromAgent, to_agent as toAgent, content, created_at as createdAt
+      FROM agent_ipc
+      WHERE to_agent = ? AND status = 'pending'
+      ORDER BY created_at ASC
+    `);
+    return stmt.all(toAgent) as Array<{ ipcId: number; fromAgent: string; toAgent: string; content: string; createdAt: string }>;
+  }
+
+  markIpcDelivered(ipcId: number): void {
+    const stmt = this.db.prepare(`
+      UPDATE agent_ipc SET status = 'delivered', delivered_at = ? WHERE ipc_id = ?
+    `);
+    stmt.run(nowIso(), ipcId);
+  }
+
+  // --- Stats / Metrics ---
+
+  getAgentStats(agentId: string): { messageCount: number; inboundCount: number; outboundCount: number; toolCallCount: number } {
+    const msgStmt = this.db.prepare(`
+      SELECT
+        COUNT(*) as messageCount,
+        SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) as inboundCount,
+        SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) as outboundCount
+      FROM agent_messages
+      WHERE agent_id = ?
+    `);
+    const msgRow = msgStmt.get(agentId) as { messageCount: number; inboundCount: number; outboundCount: number };
+
+    const toolStmt = this.db.prepare(`
+      SELECT COUNT(*) as toolCallCount
+      FROM agent_events
+      WHERE agent_id = ? AND event_type = 'tool_execution_start'
+    `);
+    const toolRow = toolStmt.get(agentId) as { toolCallCount: number };
+
+    return {
+      messageCount: msgRow.messageCount ?? 0,
+      inboundCount: msgRow.inboundCount ?? 0,
+      outboundCount: msgRow.outboundCount ?? 0,
+      toolCallCount: toolRow.toolCallCount ?? 0,
+    };
+  }
+
+  // --- Conversation History ---
+
+  getConversationHistory(agentId: string, limit = 100): AgentMessageRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        message_id as messageId,
+        agent_id as agentId,
+        direction,
+        role,
+        content,
+        created_at as createdAt,
+        correlation_id as correlationId
+      FROM agent_messages
+      WHERE agent_id = ?
+      ORDER BY message_id ASC
+      LIMIT ?
+    `);
+    return stmt.all(agentId, limit) as AgentMessageRecord[];
   }
 
   close(): void {

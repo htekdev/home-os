@@ -1,8 +1,8 @@
 import { CopilotClient, approveAll } from '@github/copilot-sdk';
-import { getProfile } from '../profiles/index.js';
+import { getProfile, enableHotReload, clearProfileCache } from '../profiles/index.js';
 import { HomeOsStore } from '../store/db.js';
 import { resolveTools, type ToolDefinition } from '../tools/index.js';
-import type { AgentProfile, AgentRecord, AgentMessageRecord, DaemonStatus, SpawnAgentRequest } from '../types.js';
+import type { AgentProfile, AgentRecord, AgentMessageRecord, AgentStats, AgentHealthInfo, DaemonStatus, SpawnAgentRequest } from '../types.js';
 import { DB_PATH, HOME_OS_ROOT } from '../utils/paths.js';
 
 export type EventSinkCallback = (event: { type: string; agentId: string; data: unknown; timestamp: string }) => void;
@@ -36,6 +36,7 @@ interface SupervisorOptions {
   store?: HomeOsStore;
   clientFactory?: () => CopilotClientLike;
   skipBootstrap?: boolean;
+  enableHotReload?: boolean;
 }
 
 function nowIso(): string {
@@ -43,12 +44,14 @@ function nowIso(): string {
 }
 
 function buildAgentId(): string {
-  return `agt_${Date.now().toString(36)}`;
+  return `agt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
 function buildSdkSessionId(profile: string): string {
   return `homeos-${profile}-${Date.now()}`;
 }
+
+const ESTIMATED_KB_PER_MESSAGE = 2; // rough estimate for memory tracking
 
 export class AgentSupervisor {
   private readonly port: number;
@@ -57,16 +60,19 @@ export class AgentSupervisor {
   private readonly liveAgents = new Map<string, LiveAgentSession>();
   private readonly attachSubscribers = new Map<string, Set<EventSinkCallback>>();
   private readonly skipBootstrap: boolean;
+  private readonly hotReloadEnabled: boolean;
   private client: CopilotClientLike | null = null;
   private startedAt = nowIso();
   private lastError: string | null = null;
   private sdkReady = false;
+  private hotReloadCleanup: (() => void) | null = null;
 
   constructor(options: SupervisorOptions) {
     this.port = options.port;
     this.store = options.store ?? new HomeOsStore();
     this.clientFactory = options.clientFactory ?? (() => new CopilotClient({}) as unknown as CopilotClientLike);
     this.skipBootstrap = options.skipBootstrap ?? false;
+    this.hotReloadEnabled = options.enableHotReload ?? false;
   }
 
   async start(): Promise<void> {
@@ -77,6 +83,18 @@ export class AgentSupervisor {
       this.lastError = null;
       // Attempt recovery of persisted agents
       await this.recoverAgents();
+      // Enable hot-reload if configured
+      if (this.hotReloadEnabled) {
+        this.hotReloadCleanup = enableHotReload((profiles) => {
+          this.store.recordEvent({
+            agentId: 'daemon',
+            sdkSessionId: 'system',
+            eventType: 'profiles.reloaded',
+            payloadJson: JSON.stringify({ count: profiles.length, names: profiles.map(p => p.name) }),
+            createdAt: nowIso(),
+          });
+        });
+      }
     } catch (error) {
       this.sdkReady = false;
       this.lastError = error instanceof Error ? error.message : String(error);
@@ -104,6 +122,11 @@ export class AgentSupervisor {
   }
 
   async shutdown(): Promise<void> {
+    // Stop hot-reload watcher
+    if (this.hotReloadCleanup) {
+      this.hotReloadCleanup();
+      this.hotReloadCleanup = null;
+    }
     for (const [agentId, live] of this.liveAgents.entries()) {
       await live.sdkSession.disconnect();
       this.store.updateAgentStatus(agentId, 'orphaned');
@@ -117,8 +140,8 @@ export class AgentSupervisor {
     this.sdkReady = false;
   }
 
-  getStatus(): DaemonStatus {
-    return {
+  getStatus(includeAgentHealth = false): DaemonStatus {
+    const status: DaemonStatus = {
       ok: true,
       port: this.port,
       startedAt: this.startedAt,
@@ -128,6 +151,27 @@ export class AgentSupervisor {
       dbPath: DB_PATH,
       lastError: this.lastError,
     };
+
+    if (includeAgentHealth) {
+      const agents = this.store.listAgents();
+      status.agents = agents.map((a) => {
+        const stats = this.store.getAgentStats(a.agentId);
+        const memKb = stats.messageCount * ESTIMATED_KB_PER_MESSAGE;
+        return {
+          agentId: a.agentId,
+          profile: a.profile,
+          status: a.status as import('../types.js').AgentStatus,
+          isLoaded: this.liveAgents.has(a.agentId),
+          lastActiveAt: a.lastActiveAt,
+          messageCount: stats.messageCount,
+          estimatedMemoryKb: memKb,
+          lastError: a.lastError,
+        };
+      });
+      status.totalMemoryKb = status.agents.reduce((sum, a) => sum + a.estimatedMemoryKb, 0);
+    }
+
+    return status;
   }
 
   listAgents(filter?: { status?: string }): AgentRecord[] {
@@ -437,6 +481,107 @@ export class AgentSupervisor {
       throw new Error(`Unknown agent: ${identifier}`);
     }
     return this.store.getLogs(agent.agentId, limit);
+  }
+
+  // --- Phase 4: Agent-to-Agent Messaging ---
+
+  async sendAgentMessage(fromIdentifier: string, toIdentifier: string, content: string): Promise<{ ipcId: number }> {
+    const fromAgent = this.store.findAgent(fromIdentifier);
+    if (!fromAgent) {
+      throw new Error(`Unknown source agent: ${fromIdentifier}`);
+    }
+    const toAgent = this.store.findAgent(toIdentifier);
+    if (!toAgent) {
+      throw new Error(`Unknown target agent: ${toIdentifier}`);
+    }
+
+    const ipcId = this.store.sendIpcMessage(fromAgent.agentId, toAgent.agentId, content);
+
+    this.store.recordEvent({
+      agentId: fromAgent.agentId,
+      sdkSessionId: fromAgent.sdkSessionId,
+      eventType: 'ipc.sent',
+      payloadJson: JSON.stringify({ to: toAgent.agentId, ipcId }),
+      createdAt: nowIso(),
+    });
+
+    // If target is live, deliver immediately
+    await this.deliverPendingIpc(toAgent.agentId);
+
+    return { ipcId };
+  }
+
+  private async deliverPendingIpc(agentId: string): Promise<void> {
+    const live = this.liveAgents.get(agentId);
+    if (!live) return;
+
+    const pending = this.store.getPendingIpcMessages(agentId);
+    for (const msg of pending) {
+      try {
+        const ipcPrompt = `[IPC from ${msg.fromAgent}]: ${msg.content}`;
+        await live.sdkSession.send({ prompt: ipcPrompt, mode: 'enqueue' });
+
+        this.store.recordMessage({
+          agentId,
+          direction: 'inbound',
+          role: 'system',
+          content: ipcPrompt,
+          createdAt: nowIso(),
+          correlationId: `ipc_${msg.ipcId}`,
+        });
+
+        this.store.markIpcDelivered(msg.ipcId);
+
+        this.store.recordEvent({
+          agentId,
+          sdkSessionId: live.sdkSession.sessionId,
+          eventType: 'ipc.delivered',
+          payloadJson: JSON.stringify({ from: msg.fromAgent, ipcId: msg.ipcId }),
+          createdAt: nowIso(),
+        });
+      } catch {
+        // Delivery failure — message remains pending for retry
+      }
+    }
+  }
+
+  // --- Phase 4: Agent Stats/Metrics ---
+
+  getAgentStats(identifier: string): AgentStats {
+    const agent = this.store.findAgent(identifier);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${identifier}`);
+    }
+
+    const stats = this.store.getAgentStats(agent.agentId);
+    const createdMs = new Date(agent.createdAt).getTime();
+    const endMs = agent.stoppedAt ? new Date(agent.stoppedAt).getTime() : Date.now();
+    const uptimeMs = endMs - createdMs;
+    const estimatedMemoryKb = stats.messageCount * ESTIMATED_KB_PER_MESSAGE;
+
+    return {
+      agentId: agent.agentId,
+      profile: agent.profile,
+      status: agent.status as import('../types.js').AgentStatus,
+      uptimeMs,
+      messageCount: stats.messageCount,
+      inboundCount: stats.inboundCount,
+      outboundCount: stats.outboundCount,
+      toolCallCount: stats.toolCallCount,
+      lastActiveAt: agent.lastActiveAt,
+      createdAt: agent.createdAt,
+      estimatedMemoryKb,
+    };
+  }
+
+  // --- Phase 4: Conversation History ---
+
+  getConversationHistory(identifier: string, limit = 100): AgentMessageRecord[] {
+    const agent = this.store.findAgent(identifier);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${identifier}`);
+    }
+    return this.store.getConversationHistory(agent.agentId, limit);
   }
 
   async stopAgent(identifier: string, deleteSession = false): Promise<AgentRecord> {

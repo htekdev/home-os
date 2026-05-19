@@ -46,6 +46,15 @@ export interface AgentProfile {
   baseTools: string[];
   customTools?: string[];
   mcpProfile?: string;
+  mcpServers?: McpServerConfig[];
+}
+
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
 }
 
 export interface SpawnAgentRequest {
@@ -53,6 +62,31 @@ export interface SpawnAgentRequest {
   cwd?: string;
   label?: string;
   model?: string;
+}
+
+export interface AgentStats {
+  agentId: string;
+  profile: string;
+  status: AgentStatus;
+  uptimeMs: number;
+  messageCount: number;
+  inboundCount: number;
+  outboundCount: number;
+  toolCallCount: number;
+  lastActiveAt: string;
+  createdAt: string;
+  estimatedMemoryKb: number;
+}
+
+export interface AgentHealthInfo {
+  agentId: string;
+  profile: string;
+  status: AgentStatus;
+  isLoaded: boolean;
+  lastActiveAt: string;
+  messageCount: number;
+  estimatedMemoryKb: number;
+  lastError: string | null;
 }
 
 export interface DaemonStatus {
@@ -64,4 +98,18 @@ export interface DaemonStatus {
   runtimeRoot: string;
   dbPath: string;
   lastError: string | null;
+  agents?: AgentHealthInfo[];
+  totalMemoryKb?: number;
+}
+
+export interface ProfileValidationError {
+  file: string;
+  field: string;
+  message: string;
+}
+
+export interface ProfileValidationResult {
+  valid: boolean;
+  profile: AgentProfile | null;
+  errors: ProfileValidationError[];
 }

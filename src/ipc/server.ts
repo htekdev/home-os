@@ -29,7 +29,8 @@ export function createIpcServer(supervisor: AgentSupervisor, port: number) {
       const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`);
 
       if (method === 'GET' && url.pathname === '/health') {
-        sendJson(response, 200, supervisor.getStatus());
+        const detailed = url.searchParams.get('detailed') === 'true';
+        sendJson(response, 200, supervisor.getStatus(detailed));
         return;
       }
 
@@ -79,6 +80,33 @@ export function createIpcServer(supervisor: AgentSupervisor, port: number) {
         const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
         const info = supervisor.inspectAgent(identifier);
         sendJson(response, 200, { agent: info });
+        return;
+      }
+
+      if (method === 'GET' && url.pathname.match(/^\/agents\/[^/]+\/stats$/)) {
+        const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const stats = supervisor.getAgentStats(identifier);
+        sendJson(response, 200, { stats });
+        return;
+      }
+
+      if (method === 'GET' && url.pathname.match(/^\/agents\/[^/]+\/history$/)) {
+        const identifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const limit = Number(url.searchParams.get('limit') ?? '100');
+        const history = supervisor.getConversationHistory(identifier, limit);
+        sendJson(response, 200, { history });
+        return;
+      }
+
+      if (method === 'POST' && url.pathname.match(/^\/agents\/[^/]+\/message$/)) {
+        const fromIdentifier = decodeURIComponent(url.pathname.split('/')[2] ?? '');
+        const body = await readBody(request) as { to: string; content: string };
+        if (!body.to || !body.content) {
+          sendJson(response, 400, { error: 'Missing required fields: to, content' });
+          return;
+        }
+        const result = await supervisor.sendAgentMessage(fromIdentifier, body.to, body.content);
+        sendJson(response, 200, { ok: true, ...result });
         return;
       }
 

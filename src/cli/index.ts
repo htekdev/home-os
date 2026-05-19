@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { Command } from 'commander';
-import { getAgentLogs, getAttachUrl, getDaemonStatus, getStreamingSendUrl, inspectAgent, listAgents, resumeAgent, sendToAgent, spawnAgent, stopAgent, stopDaemon } from '../ipc/client.js';
+import { getAgentLogs, getAgentStats, getAgentHistory, getAttachUrl, getDaemonStatus, getStreamingSendUrl, inspectAgent, listAgents, resumeAgent, sendAgentMessage, sendToAgent, spawnAgent, stopAgent, stopDaemon } from '../ipc/client.js';
 import { HOME_OS_ROOT } from '../utils/paths.js';
 
 const DEFAULT_PORT = 44123;
@@ -81,7 +81,7 @@ function formatTable(agents: Array<{ agentId: string; profile: string; label: st
 }
 
 const program = new Command();
-program.name('home-os').description('Home OS CLI for persistent Copilot SDK sessions').version('1.3.0');
+program.name('home-os').description('Home OS CLI for persistent Copilot SDK sessions').version('1.4.0');
 
 program
   .command('start')
@@ -359,12 +359,71 @@ program
     console.log('home-osd stopped');
   });
 
+// --- Phase 4 Commands ---
+
+program
+  .command('history <agent>')
+  .description('Show full conversation history for an agent')
+  .option('--limit <n>', 'Max messages to show', '100')
+  .action(async (agent: string, options: { limit: string }) => {
+    await ensureDaemonStarted();
+    const response = await getAgentHistory(agent, Number(options.limit));
+    const history = response.history;
+    if (history.length === 0) {
+      console.log('No conversation history found.');
+      return;
+    }
+    for (const msg of history) {
+      const roleColor = msg.role === 'user' ? '\x1b[34m' : msg.role === 'assistant' ? '\x1b[32m' : '\x1b[33m';
+      const prefix = msg.direction === 'inbound' ? '→' : '←';
+      const timestamp = msg.createdAt.slice(11, 19); // HH:MM:SS
+      console.log(`${roleColor}[${timestamp}] ${prefix} ${msg.role}${RESET}: ${msg.content.slice(0, 500)}`);
+      if (msg.content.length > 500) {
+        console.log('  ... (truncated)');
+      }
+    }
+  });
+
+program
+  .command('stats <agent>')
+  .description('Show metrics and statistics for an agent')
+  .action(async (agent: string) => {
+    await ensureDaemonStarted();
+    const response = await getAgentStats(agent);
+    const s = response.stats;
+    console.log(`Agent Stats: ${s.agentId}`);
+    console.log(`  Profile:         ${s.profile}`);
+    console.log(`  Status:          ${colorize(s.status)}`);
+    console.log(`  Uptime:          ${formatDuration(s.uptimeMs)}`);
+    console.log(`  Messages:        ${s.messageCount} (${s.inboundCount} in / ${s.outboundCount} out)`);
+    console.log(`  Tool Calls:      ${s.toolCallCount}`);
+    console.log(`  Memory (est):    ${s.estimatedMemoryKb} KB`);
+    console.log(`  Created:         ${s.createdAt}`);
+    console.log(`  Last Active:     ${s.lastActiveAt}`);
+  });
+
+program
+  .command('message <from-agent> <to-agent> <content>')
+  .description('Send a message from one agent to another')
+  .action(async (fromAgent: string, toAgent: string, content: string) => {
+    await ensureDaemonStarted();
+    const result = await sendAgentMessage(fromAgent, toAgent, content);
+    console.log(`Message sent (IPC #${result.ipcId}): ${fromAgent} → ${toAgent}`);
+  });
+
 function formatRelative(isoDate: string): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ${Math.floor((ms % 3_600_000) / 60_000)}m`;
+  return `${Math.floor(ms / 86_400_000)}d ${Math.floor((ms % 86_400_000) / 3_600_000)}h`;
 }
 
 if (!existsSync(join(HOME_OS_ROOT, 'dist', 'daemon', 'index.js')) && !process.argv.includes('build')) {

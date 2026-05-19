@@ -1,4 +1,4 @@
-import type { AgentEventRecord, AgentRecord, AgentMessageRecord, DaemonStatus } from '../types.js';
+import type { AgentEventRecord, AgentRecord, AgentMessageRecord, AgentStats, DaemonStatus } from '../types.js';
 
 const DEFAULT_PORT = 44123;
 
@@ -19,8 +19,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function getDaemonStatus(): Promise<DaemonStatus> {
-  return request<DaemonStatus>('/health');
+export async function getDaemonStatus(detailed = false): Promise<DaemonStatus> {
+  const params = detailed ? '?detailed=true' : '';
+  return request<DaemonStatus>(`/health${params}`);
 }
 
 export async function listAgents(filter?: { status?: string }): Promise<{ agents: AgentRecord[] }> {
@@ -48,6 +49,21 @@ export function getStreamingSendUrl(agentId: string): string {
 
 export async function inspectAgent(agentId: string): Promise<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number; tools: string[] } }> {
   return request<{ agent: AgentRecord & { isLoaded: boolean; messageCount: number; tools: string[] } }>(`/agents/${encodeURIComponent(agentId)}/inspect`);
+}
+
+export async function getAgentStats(agentId: string): Promise<{ stats: AgentStats }> {
+  return request<{ stats: AgentStats }>(`/agents/${encodeURIComponent(agentId)}/stats`);
+}
+
+export async function getAgentHistory(agentId: string, limit = 100): Promise<{ history: AgentMessageRecord[] }> {
+  return request<{ history: AgentMessageRecord[] }>(`/agents/${encodeURIComponent(agentId)}/history?limit=${limit}`);
+}
+
+export async function sendAgentMessage(fromAgent: string, toAgent: string, content: string): Promise<{ ok: boolean; ipcId: number }> {
+  return request<{ ok: boolean; ipcId: number }>(`/agents/${encodeURIComponent(fromAgent)}/message`, {
+    method: 'POST',
+    body: JSON.stringify({ to: toAgent, content }),
+  });
 }
 
 export async function resumeAgent(agentId: string): Promise<{ agent: AgentRecord }> {
