@@ -4,6 +4,8 @@
 
 Home OS is a multi-agent AI platform that manages your household autonomously. This guide walks you through setup from zero to a running system.
 
+Before you start, read the [Implementation Status](./implementation-status.md) page. It explains which parts of the repository are implemented today versus still serving as scaffolding or product vision.
+
 **Time to complete:** 30-60 minutes for basic setup, 2-3 hours for full customization.
 
 ---
@@ -195,10 +197,7 @@ GOOGLE_CLIENT_SECRET=your_client_secret
 GOOGLE_REDIRECT_URI=http://localhost:3000/oauth/callback
 ```
 
-Run the auth flow:
-```bash
-node scripts/google-auth.mjs
-```
+At the moment, this repository does **not** include a checked-in Google auth helper script. Treat Google integration as partial scaffolding: you can prepare `config/google.env`, but the end-to-end auth flow is not yet documented in this repo.
 
 ### Google Maps
 
@@ -226,9 +225,9 @@ PLAID_ENV=sandbox
 
 ## Next Steps
 
-1. **Read the [Architecture Guide](architecture.md)** — Understand how the system works
-2. **Customize agents** — See [Agent Development Guide](agents-guide.md)
-3. **Build extensions** — See [Extension Guide](extensions-guide.md)
+1. **Read the [Architecture Guide](architecture.md)** — Understand the intended system shape
+2. **Review [Implementation Status](implementation-status.md)** — See what is working code vs scaffolding
+3. **Customize profiles** — See [`config/profiles/README.md`](../config/profiles/README.md)
 4. **Join the community** — [GitHub Discussions](https://github.com/htekdev/home-os/discussions)
 
 ---
