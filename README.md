@@ -11,7 +11,7 @@
 
 **A multi-agent AI system that runs your household — tasks, meals, finances, health, maintenance, and more.**
 
-[🌐 Website](https://htekdev.github.io/home-os-site) · [📖 Docs](./docs/) · [🚀 Get Started](#-quick-start) · [💬 Community](https://github.com/htekdev/home-os/discussions)
+[🌐 Website](https://htekdev.github.io/home-os-site) · [📖 Docs](./docs/) · [🧭 Implementation Status](./docs/implementation-status.md) · [🚀 Get Started](#-quick-start) · [💬 Community](https://github.com/htekdev/home-os/discussions)
 
 </div>
 
@@ -31,6 +31,8 @@ Think of it as hiring a team of AI specialists:
 - ☀️ A **daily briefing** agent that starts your morning with everything you need to know
 
 Each agent runs autonomously on a schedule, communicates via Telegram, and learns your family's patterns over time.
+
+> Looking for what is implemented today versus what is still scaffolding or vision? Start with [docs/implementation-status.md](./docs/implementation-status.md).
 
 ---
 
@@ -300,20 +302,17 @@ home-os/
 │   ├── home-maintenance.mjs
 │   ├── telegram-bridge.mjs
 │   └── google-integration.mjs
-├── data/                    # Persistent data store
-│   ├── constitution.md      # Governance document
-│   ├── family/              # Family member profiles
-│   ├── agents/              # Agent memory (4-tier per agent)
-│   └── examples/            # Example configurations
+├── data/                    # Persistent data store and templates
+│   ├── family/              # Family member profiles + member template
+│   └── agents/              # Agent memory template files
 ├── config/                  # Service credentials (gitignored)
 │   ├── telegram.env.example
 │   ├── google.env.example
 │   └── plaid.env.example
-├── docs/                    # Comprehensive documentation
-│   ├── getting-started.md
+├── docs/                    # Current checked-in documentation
 │   ├── architecture.md
-│   ├── agents-guide.md
-│   ├── memory-system.md
+│   ├── getting-started.md
+│   ├── implementation-status.md
 │   └── go-to-market.md
 ├── scripts/                 # Utility scripts
 │   ├── setup.mjs
@@ -347,12 +346,12 @@ home-os/
 
 | Service | Purpose | Status |
 |---------|---------|--------|
-| Telegram | Primary UI & notifications | ✅ Core |
-| Google Calendar | Event management | ✅ Core |
-| Gmail | Email triage & alerts | ✅ Core |
-| Google Maps | Drive times & routing | ✅ Core |
-| Plaid | Banking & transactions | 🔧 Optional |
-| GitHub | Issue tracking & automation | 🔧 Optional |
+| Telegram | Primary UI & notifications | 🟡 Local config and health-check scaffolding |
+| Google Calendar | Event management | 🟡 Config/examples present, end-to-end setup incomplete |
+| Gmail | Email triage & alerts | 🟡 Config/examples present, end-to-end setup incomplete |
+| Google Maps | Drive times & routing | 🟡 Config/examples present, end-to-end setup incomplete |
+| Plaid | Banking & transactions | 🟡 Env scaffolding only |
+| GitHub | Issue tracking & automation | 🔭 Aspirational |
 
 ---
 
@@ -368,22 +367,17 @@ Agents are autonomous. They detect situations, take action, and then notify you.
 Agents don't wait to be asked. Doctor appointment tomorrow? The system generates prep tasks: grab insurance cards, leave-by time, pack snacks for the kids. Guest coming over? Clean house tasks appear automatically.
 
 ### No Placeholders
-Every agent, every extension, every configuration is complete and working. This isn't a skeleton — it's a production system.
+The repository contains a real CLI/daemon runtime, but the larger household platform is still a mix of working code, scaffolding, and product vision. Use the [Implementation Status](docs/implementation-status.md) page as the source of truth for current scope.
 
 ---
 
 ## 📚 Documentation
 
-- [Getting Started Guide](docs/getting-started.md) — Full setup walkthrough
-- [Architecture Overview](docs/architecture.md) — How the system works
-- [Agent Development Guide](docs/agents-guide.md) — Create custom agents
-- [Memory System](docs/memory-system.md) — Understanding the 4-tier architecture
-- [Extension Development](docs/extensions-guide.md) — Build new integrations
-- [Telegram Setup](docs/telegram-setup.md) — Configure your bot
-- [Google Integration](docs/google-integration.md) — Calendar, Gmail, Maps
-- [Cron Scheduling](docs/cron-scheduling.md) — Automate agent execution
-- [Customization Guide](docs/customization.md) — Make it yours
-- [Go-to-Market Strategy](docs/go-to-market.md) — Business plan & pricing
+- [Implementation Status](docs/implementation-status.md) — What is implemented vs scaffolding vs aspirational
+- [Getting Started Guide](docs/getting-started.md) — Current setup walkthrough
+- [Architecture Overview](docs/architecture.md) — How the system is intended to fit together
+- [Profile Configuration Notes](config/profiles/README.md) — YAML profile shape and example
+- [Go-to-Market Strategy](docs/go-to-market.md) — Business plan and product vision
 
 ---
 
